@@ -9,7 +9,7 @@ st.set_page_config(page_title="AI Teacher", page_icon="📘")
 # Your Gemini API key is read from Streamlit's "Secrets" (set this up in
 # Streamlit Cloud settings — never paste the key directly into this file).
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
 # In-memory vector store (resets each time the app restarts — fine for a
 # small project; a persistent DB can be added later).
@@ -96,4 +96,4 @@ if st.button("Ask", type="primary"):
             answer, source = ask(feature, question, grade)
         st.markdown(answer)
         with st.expander("Source material used"):
-            st.write(source) 
+            st.write(source)

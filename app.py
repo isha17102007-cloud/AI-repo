@@ -6,17 +6,28 @@ import pdfplumber
 st.set_page_config(page_title="AI Teacher", page_icon="📘")
 
 # ---------- SETUP ----------
-# Your Gemini API key is read from Streamlit's "Secrets" (set this up in
-# Streamlit Cloud settings — never paste the key directly into this file).
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
-# In-memory vector store (resets each time the app restarts — fine for a
-# small project; a persistent DB can be added later).
-chroma_client = chromadb.Client()
-if "collection" not in st.session_state:
-    st.session_state.collection = chroma_client.create_collection("ncert")
-    st.session_state.ingested_files = []  # tracks what's been added so far
+# PERSISTENT vector store — saved to disk, so chapters stay ingested even
+# after you close the app or someone else opens it. You only ingest each
+# chapter ONCE, ever (unless the app is redeployed/reset by Streamlit Cloud).
+chroma_client = chromadb.PersistentClient(path="chroma_store")
+collection = chroma_client.get_or_create_collection("ncert")
+
+
+def list_ingested():
+    """Rebuild the list of ingested chapters from what's actually stored,
+    so it survives page refreshes and new visitors — not just this session."""
+    data = collection.get(include=["metadatas"])
+    seen = {}
+    for m in data["metadatas"]:
+        key = (m["grade"], m["subject"], m["chapter"])
+        seen[key] = seen.get(key, 0) + 1
+    return [
+        {"grade": g, "subject": s, "chapter": c, "chunks": n}
+        for (g, s, c), n in sorted(seen.items())
+    ]
 
 
 # ---------- HELPERS ----------
@@ -34,27 +45,16 @@ def ingest_pdf(uploaded_file, grade, subject, chapter_name):
                 text += page_text + "\n"
     chunks = chunk_text(text)
 
-    # Unique ID prefix per file so chunks from different chapters never collide
     file_key = f"{grade}_{subject}_{chapter_name}_{uploaded_file.name}".replace(" ", "_")
     ids = [f"{file_key}_{i}" for i in range(len(chunks))]
-    metadatas = [
-        {"grade": grade, "subject": subject, "chapter": chapter_name}
-        for _ in chunks
-    ]
+    metadatas = [{"grade": grade, "subject": subject, "chapter": chapter_name} for _ in chunks]
 
-    st.session_state.collection.add(
-        documents=chunks,
-        ids=ids,
-        metadatas=metadatas,
-    )
-    st.session_state.ingested_files.append(
-        {"file": uploaded_file.name, "grade": grade, "subject": subject, "chapter": chapter_name, "chunks": len(chunks)}
-    )
+    collection.add(documents=chunks, ids=ids, metadatas=metadatas)
     return len(chunks)
 
 
-def retrieve(query, grade, subject, k=3):
-    results = st.session_state.collection.query(
+def retrieve(query, grade, subject, k=6):
+    results = collection.query(
         query_texts=[query],
         n_results=k,
         where={"$and": [{"grade": grade}, {"subject": subject}]},
@@ -62,14 +62,14 @@ def retrieve(query, grade, subject, k=3):
     docs = results["documents"][0]
     if not docs:
         return None
-    return "\n\n".join(docs)
+    return "\n\n---\n\n".join(docs)
 
 
 PROMPTS = {
-    "Explain": "Explain the concept '{q}' simply, for a class {grade} student, using ONLY the material below. Keep it under 200 words.\n\nMATERIAL:\n{ctx}",
+    "Explain": "Explain the concept '{q}' simply, for a class {grade} student, using ONLY the material below. Cover it thoroughly but clearly — don't skip relevant details found in the material. \n\nMATERIAL:\n{ctx}",
     "Practice Questions": "Using ONLY the material below, write 5 practice questions on '{q}' for a class {grade} student (2 MCQs with answers marked, 2 short-answer, 1 long-answer), plus an answer key.\n\nMATERIAL:\n{ctx}",
-    "Revision Summary": "Using ONLY the material below, write a short bullet-point revision summary of '{q}' for a class {grade} student, bolding key terms, under 150 words.\n\nMATERIAL:\n{ctx}",
-    "Chapter Q&A": "Answer this student question using ONLY the material below, step by step. If the material doesn't contain the answer, say so honestly.\n\nQUESTION: {q}\n\nMATERIAL:\n{ctx}",
+    "Revision Summary": "Using ONLY the material below, write a clear, complete bullet-point revision summary of '{q}' for a class {grade} student, bolding key terms. Include every important point found in the material.\n\nMATERIAL:\n{ctx}",
+    "Chapter Q&A": "Answer this student question using ONLY the material below, step by step and in full detail. If the material doesn't contain the answer, say so honestly.\n\nQUESTION: {q}\n\nMATERIAL:\n{ctx}",
 }
 
 
@@ -91,7 +91,7 @@ GRADES = ["6", "7", "8", "9", "10"]
 
 with st.sidebar:
     st.header("1. Upload chapters")
-    st.caption("Upload as many chapters as you like — tag each one so retrieval stays accurate.")
+    st.caption("Each chapter only needs to be ingested once — it's saved permanently.")
 
     up_grade = st.selectbox("This chapter's class", GRADES, index=2, key="up_grade")
     up_subject = st.selectbox("This chapter's subject", SUBJECTS, key="up_subject")
@@ -108,12 +108,13 @@ with st.sidebar:
             with st.spinner("Reading and indexing..."):
                 for f in uploaded_files:
                     total += ingest_pdf(f, up_grade, up_subject, up_chapter_name.strip())
-            st.success(f"Indexed {total} chunks across {len(uploaded_files)} file(s).")
+            st.success(f"Indexed {total} chunks across {len(uploaded_files)} file(s). Saved permanently.")
 
-    if st.session_state.ingested_files:
+    ingested = list_ingested()
+    if ingested:
         st.divider()
-        st.caption("Chapters ingested so far:")
-        for item in st.session_state.ingested_files:
+        st.caption(f"Already ingested ({len(ingested)} chapters — permanent, no need to re-upload):")
+        for item in ingested:
             st.write(f"• Class {item['grade']} · {item['subject']} · {item['chapter']} ({item['chunks']} chunks)")
 
 st.header("2. Ask your AI teacher")
@@ -135,7 +136,7 @@ question = st.text_input(
 )
 
 if st.button("Ask", type="primary"):
-    if not st.session_state.ingested_files:
+    if not list_ingested():
         st.warning("Upload and ingest at least one chapter first (left sidebar).")
     elif not question.strip():
         st.warning("Type a topic or question first.")
@@ -146,6 +147,5 @@ if st.button("Ask", type="primary"):
             st.warning(f"No ingested chapter matches Class {ask_grade} · {ask_subject}. Check your selection or upload that chapter.")
         else:
             st.markdown(answer)
-            with st.expander("Source material used"):
+            with st.expander("Full source material used (all retrieved chunks)"):
                 st.write(source)
-

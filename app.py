@@ -166,6 +166,15 @@ with st.sidebar:
             line = "• Class " + item["grade"] + " · " + item["subject"] + " · " + item["chapter"] + " (" + str(item["chunks"]) + " chunks)"
             st.write(line)
 
+        st.divider()
+        st.caption("Made a mistake while tagging? Clear everything and start over.")
+        confirm_reset = st.checkbox("I understand this deletes everything ingested")
+        if st.button("Clear all ingested data", disabled=not confirm_reset):
+            chroma_client.delete_collection("ncert")
+            collection = chroma_client.get_or_create_collection("ncert")
+            st.success("Cleared. Re-upload your chapters, one class at a time.")
+            st.rerun()
+
 st.header("2. Ask your AI teacher")
 
 col1, col2 = st.columns(2)
@@ -196,3 +205,5 @@ if st.button("Ask", type="primary"):
             st.markdown(answer)
             with st.expander("Full source material used (all retrieved chunks)"):
                 st.write(source)
+
+

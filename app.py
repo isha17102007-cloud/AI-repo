@@ -84,7 +84,18 @@ def ingest_files(uploaded_files, grade, subject, chapter_name):
             all_ids.append(file_key + "_" + str(i))
             all_metadatas.append({"grade": grade, "subject": subject, "chapter": chapter_name})
 
-    collection.add(documents=all_documents, ids=all_ids, metadatas=all_metadatas)
+    # the database only allows a limited number of items per save call,
+    # so for bigger books we save in smaller batches, one after another,
+    # but it still happens as part of this one ingest step
+    batch_size = 200
+    i = 0
+    while i < len(all_documents):
+        batch_docs = all_documents[i:i + batch_size]
+        batch_ids = all_ids[i:i + batch_size]
+        batch_meta = all_metadatas[i:i + batch_size]
+        collection.add(documents=batch_docs, ids=batch_ids, metadatas=batch_meta)
+        i = i + batch_size
+
     return len(all_documents)
 
 
